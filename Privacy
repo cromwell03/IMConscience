@@ -1,0 +1,73 @@
+# IMConscience – Privacy Policy
+_Last updated: November 28, 2025_
+
+## Overview
+IMConscience is a lightweight Chrome extension designed to help users pause and reflect before entering risky adult or gambling websites. The extension performs all analysis **locally on your device** and **does not collect, store, transmit, or sell any personal data**.
+
+We respect user privacy and intentionally designed the extension to work without gathering or sharing any identifiable information.
+
+---
+
+## Information We Do NOT Collect
+IMConscience does **not** collect or store any of the following:
+
+- Personal information (name, email, address, phone number)
+- Financial or payment information
+- Authentication data (passwords, tokens)
+- Health information
+- Personal communications (emails, chats, messages)
+- Location data (GPS, IP, region)
+- Browsing history
+- Keystrokes, clicks, scroll data, or other activity metrics
+- Website content, in any stored or transmitted form
+
+IMConscience does **not** use analytics, trackers, or third-party logging tools.
+
+---
+
+## What the Extension Does Access (Locally Only)
+
+### 1. Current Tab URL  
+Used solely to detect whether the website is likely to contain adult or gambling material.  
+This information is **not stored, logged, or sent anywhere**.
+
+### 2. Visible Page Text (Local Scan)  
+The extension scans the page text **in memory only** to detect risky keywords.  
+No content is ever saved or sent externally.
+
+### 3. Minimal Local Settings  
+The extension uses Chrome’s internal storage to keep:
+
+- Your selected reminder mode: Neutral, Faith-Based, or Stoic  
+- A small daily counter to avoid showing too many reminders  
+
+This data is stored only on your device and never shared.
+
+---
+
+## Data Sharing
+IMConscience does **not** share data with anyone.  
+It does not send information to servers, APIs, analytics systems, or third parties.
+
+---
+
+## Remote Code
+IMConscience does **not** use remote code or load scripts from external sources.  
+All code is packaged within the extension.
+
+---
+
+## Children’s Privacy
+IMConscience does not collect any data from children or adults.  
+The extension contains no account system and requires no signup.
+
+---
+
+## Policy Changes
+If this privacy policy changes, updates will be posted on this page.
+
+---
+
+## Contact
+For questions regarding this Privacy Policy, please contact the developer through the GitHub repository’s Issues section.
+
