@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f7f8fa;
+  --surface: #ffffff;
+  --surface-muted: #f1f3f6;
+  --foreground: #14181f;
+  --muted: #64748b;
+  --border: #e4e7ec;
+  --accent: #0f6e5c;
+  --accent-foreground: #ffffff;
+  --positive: #0f6e5c;
+  --negative: #b3261e;
+  --warning: #b5730a;
+  --info: #2b5fad;
+  --sidebar: #101826;
+  --sidebar-foreground: #cbd5e1;
+  --sidebar-active: #1c2942;
+  --focus-ring: #0f6e5c;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-positive: var(--positive);
+  --color-negative: var(--negative);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-active: var(--sidebar-active);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0b0f16;
+    --surface: #12181f;
+    --surface-muted: #171e27;
+    --foreground: #e7ebf0;
+    --muted: #8996a8;
+    --border: #232b36;
+    --accent: #22a087;
+    --accent-foreground: #05130f;
+    --positive: #2fb591;
+    --negative: #e5675f;
+    --warning: #d99a3d;
+    --info: #6ea1e6;
+    --sidebar: #070b11;
+    --sidebar-foreground: #aab6c6;
+    --sidebar-active: #151d29;
+  }
+}
+
+* {
+  border-color: var(--border);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  font-feature-settings: "tnum" 1, "cv11" 1;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+input, textarea, select, button {
+  font-family: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

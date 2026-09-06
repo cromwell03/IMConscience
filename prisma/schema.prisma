@@ -1,0 +1,550 @@
+// Personal Finance Operating System — data model
+//
+// MONEY: all monetary amounts are stored as INTEGER MINOR UNITS (e.g. centavos
+// for PHP, cents for USD) in the field's own transaction currency. Never store
+// money as Float. Convert to major units only for display, using lib/money.ts.
+//
+// TRANSFERS: a transfer is a single Transaction row with type=TRANSFER,
+// sourceAccountId (money leaves) and destinationAccountId (money arrives).
+// Transfers never create Income or Expense effects.
+//
+// CREDIT CARDS: a purchase is an EXPENSE transaction on the credit card
+// account at the time of purchase. Paying the card's statement from a bank
+// account is a TRANSFER (source: bank account, destination: credit card
+// account) — it must never be recorded as a second expense.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity & auth
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  baseCurrency String   @default("PHP")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  accounts            Account[]
+  categories          Category[]
+  tags                Tag[]
+  transactions        Transaction[]
+  categorizationRules CategorizationRule[]
+  importBatches       ImportBatch[]
+  importMappings      ImportMapping[]
+  bills               Bill[]
+  assets              Asset[]
+  goals               Goal[]
+  budgets             Budget[]
+  documents           Document[]
+  netWorthSnapshots   NetWorthSnapshot[]
+  auditLogs           AuditLog[]
+  institutions        Institution[]
+  reconciliations     Reconciliation[]
+}
+
+// ---------------------------------------------------------------------------
+// Reference data
+// ---------------------------------------------------------------------------
+
+model Currency {
+  code   String  @id // ISO 4217, e.g. "PHP", "USD"
+  name   String
+  symbol String
+  isBase Boolean @default(false)
+
+  exchangeRates ExchangeRate[]
+}
+
+// Rate to convert 1 unit of `currencyCode` into the user's base currency,
+// stored scaled by 1,000,000 to avoid floating point (e.g. 1 USD = 58.25 PHP
+// is stored as rateMicros = 58250000).
+model ExchangeRate {
+  id           String   @id @default(cuid())
+  currencyCode String
+  currency     Currency @relation(fields: [currencyCode], references: [code])
+  rateMicros   BigInt
+  asOfDate     DateTime
+
+  @@index([currencyCode, asOfDate])
+}
+
+model Institution {
+  id     String  @id @default(cuid())
+  userId String
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name   String
+  notes  String?
+
+  accounts Account[]
+
+  @@unique([userId, name])
+}
+
+// ---------------------------------------------------------------------------
+// Accounts (also carries credit-card / loan specific fields, and doubles as
+// the "investment account" and "debt account" container so balances stay in
+// one place)
+// ---------------------------------------------------------------------------
+
+model Account {
+  id            String       @id @default(cuid())
+  userId        String
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name          String
+  institutionId String?
+  institution   Institution? @relation(fields: [institutionId], references: [id])
+  type          String
+  ownership     String       @default("PERSONAL")
+  currencyCode  String       @default("PHP")
+
+  // Balances are derived from ledger entries but cached here for fast reads.
+  // recomputeAccountBalance() in lib/ledger.ts is the single source of truth
+  // for how this is calculated — never hand-edit outside that path.
+  openingBalanceMinor   BigInt   @default(0)
+  openingBalanceDate    DateTime @default(now())
+  currentBalanceMinor   BigInt   @default(0)
+  availableBalanceMinor BigInt?
+
+  // Credit card / loan specific (nullable for other account types)
+  creditLimitMinor     BigInt?
+  interestRateBps      Int? // basis points, e.g. 2495 = 24.95% APR
+  minimumPaymentMinor  BigInt?
+  originalBalanceMinor BigInt?
+  termMonths           Int?
+  statementDay         Int? // day-of-month
+  paymentDueDay        Int? // day-of-month
+
+  lastFourDigits    String?
+  isActive          Boolean @default(true)
+  includeInNetWorth Boolean @default(true)
+  notes             String?
+
+  lastReconciledAt           DateTime?
+  lastReconciledBalanceMinor BigInt?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  transactionsAsSource      Transaction[]    @relation("SourceAccount")
+  transactionsAsDestination Transaction[]    @relation("DestinationAccount")
+  holdings                  Holding[]
+  bills                     Bill[]
+  goals                     Goal[]
+  documents                 Document[]
+  reconciliations           Reconciliation[]
+  importBatches             ImportBatch[]
+  importMappings            ImportMapping[]
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Categories & tags
+// ---------------------------------------------------------------------------
+
+model Category {
+  id        String     @id @default(cuid())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  kind      String
+  parentId  String?
+  parent    Category?  @relation("CategoryToSubcategory", fields: [parentId], references: [id], onDelete: Cascade)
+  children  Category[] @relation("CategoryToSubcategory")
+  icon      String?
+  color     String?
+  isDefault Boolean    @default(false)
+  isActive  Boolean    @default(true)
+
+  transactions        Transaction[]
+  transactionSplits   TransactionSplit[]
+  budgets             Budget[]
+  categorizationRules CategorizationRule[]
+  bills               Bill[]
+
+  @@unique([userId, name, parentId])
+  @@index([userId, kind])
+}
+
+model Tag {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name   String
+
+  transactions TransactionTag[]
+
+  @@unique([userId, name])
+}
+
+// ---------------------------------------------------------------------------
+// Transactions
+// ---------------------------------------------------------------------------
+
+model Transaction {
+  id                     String   @id @default(cuid())
+  userId                 String
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date                   DateTime
+  description            String
+  payee                  String?
+  amountMinor            BigInt // always a positive magnitude, in `currencyCode` (the source account's currency); effect is derived from `type`
+  currencyCode           String   @default("PHP")
+  // For a transfer-like transaction where the destination account's currency
+  // differs from `currencyCode`, this holds the amount actually credited to
+  // the destination, in the destination account's own currency. Null means
+  // "same currency, same amount as amountMinor".
+  destinationAmountMinor BigInt?
+
+  type String
+
+  // For non-transfer transactions, sourceAccountId is simply "the account".
+  sourceAccountId      String
+  sourceAccount        Account  @relation("SourceAccount", fields: [sourceAccountId], references: [id])
+  destinationAccountId String?
+  destinationAccount   Account? @relation("DestinationAccount", fields: [destinationAccountId], references: [id])
+
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id])
+
+  businessTransferSubtype String?
+
+  notes      String?
+  reconciled Boolean @default(false)
+  isSplit    Boolean @default(false)
+
+  importBatchId String?
+  importBatch   ImportBatch? @relation(fields: [importBatchId], references: [id])
+  duplicateOfId String?
+
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  tags         TransactionTag[]
+  splits       TransactionSplit[]
+  documents    Document[]
+  billPayments BillPayment[]
+
+  @@index([userId, date])
+  @@index([sourceAccountId])
+  @@index([destinationAccountId])
+  @@index([categoryId])
+}
+
+model TransactionSplit {
+  id            String      @id @default(cuid())
+  transactionId String
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  categoryId    String?
+  category      Category?   @relation(fields: [categoryId], references: [id])
+  amountMinor   BigInt
+  notes         String?
+
+  @@index([transactionId])
+}
+
+model TransactionTag {
+  transactionId String
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  tagId         String
+  tag           Tag         @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([transactionId, tagId])
+}
+
+// ---------------------------------------------------------------------------
+// Categorization rules
+// ---------------------------------------------------------------------------
+
+model CategorizationRule {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  priority   Int       @default(0)
+  matchField String
+  matchType  String
+  matchValue String // for AMOUNT_RANGE: "minMinor:maxMinor"
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id])
+  setType    String?
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([userId, isActive, priority])
+}
+
+// ---------------------------------------------------------------------------
+// Import
+// ---------------------------------------------------------------------------
+
+model ImportBatch {
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId      String
+  account        Account  @relation(fields: [accountId], references: [id])
+  sourceFilename String
+  columnMapping  String // JSON
+  importedAt     DateTime @default(now())
+  rowCount       Int      @default(0)
+
+  transactions Transaction[]
+}
+
+model ImportMapping {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId String?
+  account   Account? @relation(fields: [accountId], references: [id])
+  name      String
+  mapping   String // JSON: { date, description, amount, ... column indices/headers }
+  createdAt DateTime @default(now())
+
+  @@unique([userId, name])
+}
+
+// ---------------------------------------------------------------------------
+// Bills & recurring payments
+// ---------------------------------------------------------------------------
+
+model Bill {
+  id                 String    @id @default(cuid())
+  userId             String
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name               String
+  categoryId         String?
+  category           Category? @relation(fields: [categoryId], references: [id])
+  amountMinor        BigInt
+  currencyCode       String    @default("PHP")
+  frequency          String
+  customIntervalDays Int?
+  accountId          String?
+  account            Account?  @relation(fields: [accountId], references: [id])
+  nextDueDate        DateTime
+  autoPay            Boolean   @default(false)
+  reminderDaysBefore Int       @default(3)
+  isActive           Boolean   @default(true)
+  notes              String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  payments  BillPayment[]
+  documents Document[]
+
+  @@index([userId, nextDueDate])
+}
+
+model BillPayment {
+  id            String       @id @default(cuid())
+  billId        String
+  bill          Bill         @relation(fields: [billId], references: [id], onDelete: Cascade)
+  dueDate       DateTime
+  paidDate      DateTime?
+  amountMinor   BigInt
+  status        String       @default("SCHEDULED")
+  transactionId String?
+  transaction   Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@index([billId, dueDate])
+}
+
+// ---------------------------------------------------------------------------
+// Investments
+// ---------------------------------------------------------------------------
+
+model Holding {
+  id                String    @id @default(cuid())
+  accountId         String
+  account           Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  symbol            String?
+  name              String
+  assetClass        String
+  quantity          String // decimal string, parsed with decimal-safe math
+  averageCostMinor  BigInt // per unit
+  currentPriceMinor BigInt?
+  lastValuationDate DateTime?
+  notes             String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  valuations HoldingValuation[]
+
+  @@index([accountId])
+}
+
+model HoldingValuation {
+  id         String   @id @default(cuid())
+  holdingId  String
+  holding    Holding  @relation(fields: [holdingId], references: [id], onDelete: Cascade)
+  date       DateTime
+  priceMinor BigInt
+  quantity   String
+
+  @@index([holdingId, date])
+}
+
+// ---------------------------------------------------------------------------
+// Assets (non-financial)
+// ---------------------------------------------------------------------------
+
+model Asset {
+  id                 String    @id @default(cuid())
+  userId             String
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name               String
+  type               String
+  purchaseDate       DateTime?
+  purchasePriceMinor BigInt?
+  currentValueMinor  BigInt
+  currencyCode       String    @default("PHP")
+  lastValuationDate  DateTime?
+  includeInNetWorth  Boolean   @default(true)
+  notes              String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  documents Document[]
+}
+
+// ---------------------------------------------------------------------------
+// Goals
+// ---------------------------------------------------------------------------
+
+model Goal {
+  id                             String    @id @default(cuid())
+  userId                         String
+  user                           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name                           String
+  type                           String
+  targetAmountMinor              BigInt
+  currentAmountMinor             BigInt    @default(0)
+  currencyCode                   String    @default("PHP")
+  targetDate                     DateTime?
+  monthlyContributionTargetMinor BigInt?
+  linkedAccountId                String?
+  linkedAccount                  Account?  @relation(fields: [linkedAccountId], references: [id])
+  isActive                       Boolean   @default(true)
+  notes                          String?
+  createdAt                      DateTime  @default(now())
+  updatedAt                      DateTime  @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Budgets
+// ---------------------------------------------------------------------------
+
+model Budget {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  month       String // "YYYY-MM"
+  categoryId  String
+  category    Category @relation(fields: [categoryId], references: [id])
+  amountMinor BigInt
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, month, categoryId])
+  @@index([userId, month])
+}
+
+// ---------------------------------------------------------------------------
+// Net worth history
+// ---------------------------------------------------------------------------
+
+model NetWorthSnapshot {
+  id                    String   @id @default(cuid())
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date                  DateTime
+  totalAssetsMinor      BigInt
+  totalLiabilitiesMinor BigInt
+  liquidAssetsMinor     BigInt
+  netWorthMinor         BigInt
+  baseCurrency          String
+
+  @@unique([userId, date])
+  @@index([userId, date])
+}
+
+// ---------------------------------------------------------------------------
+// Documents
+// ---------------------------------------------------------------------------
+
+model Document {
+  id           String  @id @default(cuid())
+  userId       String
+  user         User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  filename     String
+  storagePath  String
+  mimeType     String
+  sizeBytes    Int
+  documentType String
+  notes        String?
+
+  linkedAccountId     String?
+  linkedAccount       Account?     @relation(fields: [linkedAccountId], references: [id])
+  linkedTransactionId String?
+  linkedTransaction   Transaction? @relation(fields: [linkedTransactionId], references: [id])
+  linkedAssetId       String?
+  linkedAsset         Asset?       @relation(fields: [linkedAssetId], references: [id])
+  linkedBillId        String?
+  linkedBill          Bill?        @relation(fields: [linkedBillId], references: [id])
+
+  uploadedAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Reconciliation
+// ---------------------------------------------------------------------------
+
+model Reconciliation {
+  id                     String   @id @default(cuid())
+  userId                 String
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId              String
+  account                Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  statementDate          DateTime
+  statementBalanceMinor  BigInt
+  calculatedBalanceMinor BigInt
+  differenceMinor        BigInt
+  status                 String
+  notes                  String?
+  createdAt              DateTime @default(now())
+
+  @@index([accountId, statementDate])
+}
+
+// ---------------------------------------------------------------------------
+// Audit log
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entityType String
+  entityId   String
+  action     String
+  changes    String? // JSON
+  createdAt  DateTime @default(now())
+
+  @@index([userId, entityType, entityId])
+}
